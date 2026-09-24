@@ -1,0 +1,132 @@
+-- Alka Hub 4 | KeySystem.lua
+-- Validates against AUTH_BOT.py  →  POST /api/validate
+-- Called by main.lua: KeySystem(script_key, guild_id, callback)
+
+local HttpService = game:GetService("HttpService")
+
+-- ── Config — point at wherever your auth bot is hosted ───────────
+local BOT_BASE_URL = "https://alkaauthbot-production.up.railway.app"
+local GUILD_ID     = "1533204074332164136"
+local KEY_FILE     = "alkahub_key.txt"
+
+-- ── Executor-safe HTTP POST ───────────────────────────────────────
+local function httpPost(url, body)
+    local encoded = HttpService:JSONEncode(body)
+    if syn and syn.request then
+        return syn.request({
+            Url     = url,
+            Method  = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body    = encoded,
+        })
+    elseif http and http.request then
+        return http.request({
+            Url     = url,
+            Method  = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body    = encoded,
+        })
+    elseif request then
+        return request({
+            Url     = url,
+            Method  = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body    = encoded,
+        })
+    else
+        error("No HTTP request function available")
+    end
+end
+
+-- ── HWID fingerprint (best effort) ───────────────────────────────
+local function getHWID()
+    -- Use executor HWID if available
+    if rconsoleprint then
+        local ok, id = pcall(function() return game:GetService("RbxAnalyticsService"):GetClientId() end)
+        if ok and id and id ~= "" then return id end
+    end
+    if getexecutorname then
+        return tostring(game:GetService("Players").LocalPlayer.UserId) .. "_" .. tostring(getexecutorname())
+    end
+    return tostring(game:GetService("Players").LocalPlayer.UserId)
+end
+
+-- ── Validate key against bot API ─────────────────────────────────
+local function validateWithBot(key, hwid)
+    local url = BOT_BASE_URL .. "/api/validate"
+    local ok, res = pcall(httpPost, url, {
+        key      = key:upper(),
+        guild_id = GUILD_ID,
+        hwid     = hwid,
+    })
+
+    if not ok then
+        return false, "connection_failed"
+    end
+
+    local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, res.Body)
+    if not ok2 then
+        return false, "bad_response"
+    end
+
+    return decoded.valid == true, decoded.reason or "unknown"
+end
+
+-- ── Reason → human message ────────────────────────────────────────
+local REASON_MSG = {
+    not_found      = "Key not found. Check your key and try again.",
+    revoked        = "This key has been revoked.",
+    not_activated  = "Key not activated. Redeem it in Discord first.",
+    blacklisted    = "You are blacklisted from Alka Hub.",
+    expired        = "Your key has expired. Renew in Discord.",
+    hwid_mismatch  = "HWID mismatch. This key is locked to another device.",
+    invalid_format = "Invalid key format. Keys start with ALKA-",
+    missing_fields = "Missing fields in request.",
+    connection_failed = "Could not reach auth server. Try again.",
+    bad_response   = "Auth server returned bad data. Try again.",
+}
+
+local function reasonMsg(reason)
+    return REASON_MSG[reason] or ("Auth failed: " .. tostring(reason))
+end
+
+-- ── Cache valid key to disk ───────────────────────────────────────
+local function cacheKey(key)
+    if writefile then pcall(writefile, KEY_FILE, key) end
+end
+
+local function readCachedKey()
+    if readfile and isfile and isfile(KEY_FILE) then
+        local ok, v = pcall(readfile, KEY_FILE)
+        if ok then return v:gsub("%s+", "") end
+    end
+    return nil
+end
+
+-- ── Entry point ───────────────────────────────────────────────────
+-- KeySystem(inputKey, callback)
+-- callback(passed: bool, reason: string)
+local function init(inputKey, callback)
+    if not inputKey or inputKey:gsub("%s+", "") == "" then
+        callback(false, "no key provided")
+        return
+    end
+
+    local key  = inputKey:gsub("%s+", ""):upper()
+    local hwid = getHWID()
+
+    task.spawn(function()
+        local valid, reason = validateWithBot(key, hwid)
+
+        if valid then
+            cacheKey(key)
+            callback(true, "ok")
+        else
+            -- Clear bad cached key so it doesn't auto-load next time
+            if writefile then pcall(writefile, KEY_FILE, "") end
+            callback(false, reasonMsg(reason))
+        end
+    end)
+end
+
+return init
