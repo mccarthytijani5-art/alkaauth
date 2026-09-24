@@ -1,0 +1,533 @@
+-- Alka Hub 4 | main.lua
+-- Keys are managed by AUTH_BOT.py running on Railway.
+-- Generate keys with /genkey in Discord, redeem with /redeem.
+--
+-- Usage in executor:
+--   script_key = "ALKA-FIRE-2024-HUB4"
+--   loadstring(game:HttpGet("https://your-auth-bot.up.railway.app/api/script/alkahub"))()
+--
+-- Or host main.lua separately and point at the same bot URL:
+--   script_key = "ALKA-FIRE-2024-HUB4"
+--   loadstring(game:HttpGet("https://your-static-host/main.lua"))()
+
+local HttpService      = game:GetService("HttpService")
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ── Auth bot base URL — same host running AUTH_BOT.py ────────────
+local BASE_URL = "https://alkaauthbot-production.up.railway.app"
+
+-- ── Executor-safe HTTP ────────────────────────────────────────────
+local function httpGet(url)
+    if syn and syn.request then
+        return syn.request({ Url = url, Method = "GET" }).Body
+    elseif http and http.request then
+        return http.request({ Url = url, Method = "GET" }).Body
+    elseif request then
+        return request({ Url = url, Method = "GET" }).Body
+    else
+        return game:HttpGet(url)
+    end
+end
+
+-- ── Pull key from script_key global ──────────────────────────────
+local inputKey = (typeof(script_key) == "string") and script_key:gsub("%s+", "") or nil
+
+if not inputKey or inputKey == "" then
+    warn("[AlkaHub] No key provided. Set script_key before loading.")
+    return
+end
+
+-- ── Load and run KeySystem ────────────────────────────────────────
+local keySource = httpGet(BASE_URL .. "/KeySystem.lua")
+local KeySystem  = loadstring(keySource)()
+
+KeySystem(inputKey, function(passed, reason)
+    if not passed then
+        -- reason is already a human-readable string from KeySystem.lua
+        warn("[AlkaHub] " .. (reason or "Key rejected."))
+        return
+    end
+
+    -- ── Everything below runs only after key passes ───────────────
+
+    local function safeProtect(gui)
+        if syn and syn.protect_gui then
+            pcall(syn.protect_gui, gui)
+            gui.Parent = game.CoreGui
+        elseif gethui then
+            gui.Parent = gethui()
+        else
+            gui.Parent = PlayerGui
+        end
+    end
+
+    local function writeData(k, data)
+        if writefile then
+            pcall(writefile, "alkahub_" .. k .. ".json", HttpService:JSONEncode(data))
+        end
+    end
+
+    local function readData(k)
+        if readfile and isfile and isfile("alkahub_" .. k .. ".json") then
+            local ok, res = pcall(readfile, "alkahub_" .. k .. ".json")
+            if ok then
+                local ok2, d = pcall(HttpService.JSONDecode, HttpService, res)
+                if ok2 then return d end
+            end
+        end
+        return nil
+    end
+
+    -- ── Hub state ─────────────────────────────────────────────────
+    local Hub = { Version = "4.0", Toggles = {}, PanelPos = {} }
+    local saved = readData("state")
+    if saved then
+        Hub.Toggles  = saved.Toggles  or {}
+        Hub.PanelPos = saved.PanelPos or {}
+    end
+
+    local function saveState()
+        writeData("state", { Toggles = Hub.Toggles, PanelPos = Hub.PanelPos })
+    end
+
+    -- ── UI helpers ────────────────────────────────────────────────
+    local function mkFrame(parent, props)
+        local f = Instance.new("Frame")
+        for k, v in pairs(props) do f[k] = v end
+        f.Parent = parent
+        return f
+    end
+
+    local function mkLabel(parent, props)
+        local l = Instance.new("TextLabel")
+        l.BackgroundTransparency = 1
+        l.TextColor3 = Color3.fromRGB(255, 255, 255)
+        l.Font = Enum.Font.GothamBold
+        for k, v in pairs(props) do l[k] = v end
+        l.Parent = parent
+        return l
+    end
+
+    local function mkButton(parent, props, cb)
+        local b = Instance.new("TextButton")
+        b.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+        b.TextColor3 = Color3.fromRGB(255, 255, 255)
+        b.Font = Enum.Font.GothamBold
+        b.AutoButtonColor = false
+        b.BorderSizePixel = 0
+        for k, v in pairs(props) do b[k] = v end
+        b.Parent = parent
+        b.MouseButton1Click:Connect(function()
+            TweenService:Create(b, TweenInfo.new(0.08), { BackgroundColor3 = Color3.fromRGB(80, 80, 120) }):Play()
+            task.delay(0.12, function()
+                TweenService:Create(b, TweenInfo.new(0.08), { BackgroundColor3 = Color3.fromRGB(40, 40, 60) }):Play()
+            end)
+            if cb then cb() end
+        end)
+        return b
+    end
+
+    local function mkToggle(parent, key, label, yPos, cb)
+        local row = mkFrame(parent, {
+            Size = UDim2.new(1, -20, 0, 32),
+            Position = UDim2.new(0, 10, 0, yPos),
+            BackgroundTransparency = 1,
+        })
+        mkLabel(row, {
+            Size = UDim2.new(0.72, 0, 1, 0),
+            Text = label,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextSize = 13,
+        })
+
+        local track = mkFrame(row, {
+            Size = UDim2.new(0, 44, 0, 24),
+            Position = UDim2.new(1, -54, 0.5, -12),
+            BackgroundColor3 = Color3.fromRGB(55, 55, 75),
+        })
+        Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+        local knob = mkFrame(track, {
+            Size = UDim2.new(0, 20, 0, 20),
+            Position = UDim2.new(0, 2, 0.5, -10),
+            BackgroundColor3 = Color3.fromRGB(190, 190, 210),
+        })
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+        local state = Hub.Toggles[key] or false
+
+        local function refresh(on)
+            TweenService:Create(knob, TweenInfo.new(0.15), {
+                Position = on and UDim2.new(0, 22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+            }):Play()
+            TweenService:Create(track, TweenInfo.new(0.15), {
+                BackgroundColor3 = on and Color3.fromRGB(100, 80, 220) or Color3.fromRGB(55, 55, 75)
+            }):Play()
+        end
+
+        refresh(state)
+
+        track.InputBegan:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1
+            or i.UserInputType == Enum.UserInputType.Touch then
+                state = not state
+                Hub.Toggles[key] = state
+                refresh(state)
+                saveState()
+                if cb then cb(state) end
+            end
+        end)
+
+        return row
+    end
+
+    local function mkDraggable(panel, handle, key)
+        local p = Hub.PanelPos[key]
+        if p then panel.Position = UDim2.new(0, p.X, 0, p.Y) end
+
+        local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+
+        handle.InputBegan:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1
+            or i.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                dragStart = i.Position
+                startPos  = panel.Position
+                i.Changed:Connect(function()
+                    if i.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end)
+
+        handle.InputChanged:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseMovement
+            or i.UserInputType == Enum.UserInputType.Touch then
+                dragInput = i
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(i)
+            if i == dragInput and dragging then
+                local d = i.Position - dragStart
+                local np = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                     startPos.Y.Scale, startPos.Y.Offset + d.Y)
+                panel.Position = np
+                Hub.PanelPos[key] = { X = np.X.Offset, Y = np.Y.Offset }
+                saveState()
+            end
+        end)
+    end
+
+    -- ── ScreenGui ─────────────────────────────────────────────────
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AlkaHub4"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    safeProtect(ScreenGui)
+
+    -- ── Main Panel ────────────────────────────────────────────────
+    local MainPanel = mkFrame(ScreenGui, {
+        Size = UDim2.new(0, 310, 0, 440),
+        Position = UDim2.new(0.5, -155, 0.5, -220),
+        BackgroundColor3 = Color3.fromRGB(14, 14, 22),
+        BorderSizePixel = 0,
+    })
+    Instance.new("UICorner", MainPanel).CornerRadius = UDim.new(0, 12)
+
+    local borderStroke = Instance.new("UIStroke", MainPanel)
+    borderStroke.Thickness = 2
+
+    task.spawn(function()
+        local hue = 0
+        while MainPanel.Parent do
+            hue = (hue + 0.4) % 360
+            borderStroke.Color = Color3.fromHSV(hue / 360, 0.55, 1)
+            task.wait(0.03)
+        end
+    end)
+
+    local titleBar = mkFrame(MainPanel, {
+        Size = UDim2.new(1, 0, 0, 44),
+        BackgroundColor3 = Color3.fromRGB(20, 18, 36),
+        BorderSizePixel = 0,
+    })
+    Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
+
+    mkLabel(titleBar, {
+        Size = UDim2.new(1, -80, 1, 0),
+        Position = UDim2.new(0, 14, 0, 0),
+        Text = "⚡  ALKA HUB  v" .. Hub.Version,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextSize = 15,
+    })
+
+    local minimized = false
+    local contentArea = mkFrame(MainPanel, {
+        Size = UDim2.new(1, 0, 1, -44),
+        Position = UDim2.new(0, 0, 0, 44),
+        BackgroundTransparency = 1,
+    })
+
+    mkButton(titleBar, {
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -72, 0.5, -14),
+        Text = "—",
+        TextSize = 13,
+    }, function()
+        minimized = not minimized
+        contentArea.Visible = not minimized
+        TweenService:Create(MainPanel, TweenInfo.new(0.2), {
+            Size = minimized and UDim2.new(0, 310, 0, 44) or UDim2.new(0, 310, 0, 440)
+        }):Play()
+    end)
+
+    mkButton(titleBar, {
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -38, 0.5, -14),
+        Text = "✕",
+        TextSize = 13,
+        BackgroundColor3 = Color3.fromRGB(160, 40, 40),
+    }, function()
+        ScreenGui:Destroy()
+    end)
+
+    mkDraggable(MainPanel, titleBar, "main")
+
+    -- ── Tab bar ───────────────────────────────────────────────────
+    local tabBar = mkFrame(contentArea, {
+        Size = UDim2.new(1, 0, 0, 34),
+        BackgroundColor3 = Color3.fromRGB(18, 16, 30),
+        BorderSizePixel = 0,
+    })
+
+    local tabPages = {}
+    local tabBtns  = {}
+    local tabDefs  = { "Main", "Flash TP", "ESP", "Misc" }
+
+    for i, name in ipairs(tabDefs) do
+        local page = mkFrame(contentArea, {
+            Size = UDim2.new(1, 0, 1, -34),
+            Position = UDim2.new(0, 0, 0, 34),
+            BackgroundTransparency = 1,
+            Visible = false,
+        })
+        tabPages[name] = page
+
+        local btn = Instance.new("TextButton", tabBar)
+        btn.Size = UDim2.new(1 / #tabDefs, 0, 1, 0)
+        btn.Position = UDim2.new((i - 1) / #tabDefs, 0, 0, 0)
+        btn.BackgroundTransparency = 1
+        btn.Text = name
+        btn.TextColor3 = Color3.fromRGB(160, 150, 200)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 12
+        btn.AutoButtonColor = false
+        tabBtns[name] = btn
+
+        btn.MouseButton1Click:Connect(function()
+            for n, p in pairs(tabPages) do
+                p.Visible = (n == name)
+                tabBtns[n].TextColor3 = (n == name)
+                    and Color3.fromRGB(255, 255, 255)
+                    or  Color3.fromRGB(160, 150, 200)
+            end
+        end)
+    end
+
+    tabPages["Main"].Visible = true
+    tabBtns["Main"].TextColor3 = Color3.fromRGB(255, 255, 255)
+
+    -- ── Main Tab ──────────────────────────────────────────────────
+    local mainPage = tabPages["Main"]
+
+    mkLabel(mainPage, {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.new(0, 10, 0, 10),
+        Text = "Player",
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(130, 120, 180),
+    })
+
+    mkToggle(mainPage, "walkspeed", "Walk Speed (32)", 38, function(on)
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+        if hum then hum.WalkSpeed = on and 32 or 16 end
+    end)
+
+    mkToggle(mainPage, "jumppower", "Jump Power (80)", 76, function(on)
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+        if hum then hum.JumpPower = on and 80 or 50 end
+    end)
+
+    local ijConn
+    mkToggle(mainPage, "infjump", "Infinite Jump", 114, function(on)
+        if ijConn then ijConn:Disconnect(); ijConn = nil end
+        if on then
+            ijConn = UserInputService.JumpRequest:Connect(function()
+                local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+                if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+            end)
+        end
+    end)
+
+    local noClipConn
+    mkToggle(mainPage, "noclip", "Noclip", 152, function(on)
+        if noClipConn then noClipConn:Disconnect(); noClipConn = nil end
+        if on then
+            noClipConn = RunService.Stepped:Connect(function()
+                if LocalPlayer.Character then
+                    for _, p in ipairs(LocalPlayer.Character:GetDescendants()) do
+                        if p:IsA("BasePart") then p.CanCollide = false end
+                    end
+                end
+            end)
+        end
+    end)
+
+    Players.LocalPlayer.CharacterAdded:Connect(function(char)
+        local hum = char:WaitForChild("Humanoid")
+        if Hub.Toggles["walkspeed"] then hum.WalkSpeed = 32 end
+        if Hub.Toggles["jumppower"] then hum.JumpPower = 80 end
+    end)
+
+    -- ── Flash TP Tab ──────────────────────────────────────────────
+    local flashPage = tabPages["Flash TP"]
+
+    mkLabel(flashPage, {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.new(0, 10, 0, 10),
+        Text = "Flash Teleport",
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(130, 120, 180),
+    })
+
+    mkToggle(flashPage, "flashtp", "Flash TP (Click to TP)", 38, function(on)
+        -- wire into your Flash TP logic here
+    end)
+
+    -- ── ESP Tab ───────────────────────────────────────────────────
+    local espPage = tabPages["ESP"]
+
+    mkLabel(espPage, {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.new(0, 10, 0, 10),
+        Text = "ESP / Visuals",
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(130, 120, 180),
+    })
+
+    local espHighlights = {}
+
+    local function clearESP()
+        for _, h in pairs(espHighlights) do
+            if h and h.Parent then h:Destroy() end
+        end
+        espHighlights = {}
+    end
+
+    local function buildESP()
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character then
+                local h = Instance.new("Highlight", plr.Character)
+                h.FillColor = Color3.fromRGB(255, 60, 60)
+                h.OutlineColor = Color3.fromRGB(255, 255, 255)
+                h.FillTransparency = 0.55
+                espHighlights[plr.Name] = h
+            end
+        end
+    end
+
+    mkToggle(espPage, "esp_players", "Player ESP (Highlight)", 38, function(on)
+        if on then buildESP() else clearESP() end
+    end)
+
+    mkToggle(espPage, "esp_admin", "Admin ESP", 76, function(on)
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character then
+                local existing = plr.Character:FindFirstChild("AlkaAdminTag")
+                if on then
+                    if not existing and plr:GetAttribute("AdminCommands") then
+                        local root = plr.Character:FindFirstChild("HumanoidRootPart") or plr.Character
+                        local bb = Instance.new("BillboardGui", root)
+                        bb.Name = "AlkaAdminTag"
+                        bb.Size = UDim2.new(0, 80, 0, 24)
+                        bb.StudsOffset = Vector3.new(0, 3.2, 0)
+                        bb.AlwaysOnTop = true
+                        local lbl = Instance.new("TextLabel", bb)
+                        lbl.Size = UDim2.new(1, 0, 1, 0)
+                        lbl.BackgroundTransparency = 1
+                        lbl.Text = "⭐ ADMIN"
+                        lbl.TextColor3 = Color3.fromRGB(255, 220, 60)
+                        lbl.Font = Enum.Font.GothamBold
+                        lbl.TextSize = 13
+                    end
+                else
+                    if existing then existing:Destroy() end
+                end
+            end
+        end
+    end)
+
+    -- ── Misc Tab ──────────────────────────────────────────────────
+    local miscPage = tabPages["Misc"]
+
+    mkLabel(miscPage, {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.new(0, 10, 0, 10),
+        Text = "Misc",
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(130, 120, 180),
+    })
+
+    mkToggle(miscPage, "antiafk", "Anti-AFK", 38, function(on)
+        if on then
+            task.spawn(function()
+                while Hub.Toggles["antiafk"] do
+                    if LocalPlayer.Character then
+                        local vu = Instance.new("VirtualUser")
+                        vu.Parent = LocalPlayer
+                        vu:CaptureController()
+                        vu:ClickButton2(Vector2.new())
+                        vu:Destroy()
+                    end
+                    task.wait(18)
+                end
+            end)
+        end
+    end)
+
+    mkToggle(miscPage, "fpsunlock", "FPS Unlock (240)", 76, function(on)
+        local setfps = setfpscap or (syn and syn.set_fps_cap)
+        if setfps then pcall(setfps, on and 240 or 60) end
+    end)
+
+    mkButton(miscPage, {
+        Size = UDim2.new(1, -20, 0, 34),
+        Position = UDim2.new(0, 10, 0, 320),
+        Text = "Rejoin Server",
+        TextSize = 13,
+        BackgroundColor3 = Color3.fromRGB(50, 36, 80),
+    }, function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+    end)
+
+    mkButton(miscPage, {
+        Size = UDim2.new(1, -20, 0, 34),
+        Position = UDim2.new(0, 10, 0, 362),
+        Text = "📋  Copy Discord Link",
+        TextSize = 13,
+        BackgroundColor3 = Color3.fromRGB(36, 40, 80),
+    }, function()
+        if setclipboard then setclipboard("https://discord.gg/yourlink") end
+    end)
+
+end) -- end key gate
